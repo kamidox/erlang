@@ -19,6 +19,7 @@ valid_datetime(T) when is_number(T) ->
 valid_datetime(_) -> false.
 
 send_to_client(Msg, Clients) ->
+    io:format("send ~p to ~p clients.~n", [Msg, dict:size(Clients)]),
     dict:map(fun(_, Client) -> Client ! Msg end, Clients).
 
 loop(S) ->
@@ -37,7 +38,7 @@ loop(S) ->
             %% add new event
             case valid_datetime(Timeout) of
                 true ->
-                    EventPid = rmd_event:start_link(Name, Timeout),
+                    EventPid = rmd_event:start(Name, Timeout),
                     NewEvents = dict:store(Name,
                                            #event{name=Name,
                                                   desc=Desc,
@@ -63,6 +64,7 @@ loop(S) ->
             loop(S#state{events=NewEvents});
         {done, Name} ->
             %% receive done event from rmd_event
+            io:format("Event ~p done.~n", [Name]),
             case dict:find(Name, S#state.events) of
                 {ok, E} ->
                     send_to_client({done, E#event.name, E#event.desc}, S#state.clients),
@@ -95,29 +97,43 @@ start_link() ->
     Pid.
 
 terminate() ->
-    ?MODULE ! terminate.
+    case whereis(?MODULE) of
+        undefined -> {error, already_terminated};
+        _ -> ?MODULE ! shutdown
+    end.
 
 subscribe(Client) ->
-    Ref = erlang:monitor(process, whereis(?MODULE)),
-    ?MODULE ! {self, Ref, {subscribe, Client}},
-    receive
-        {Ref, ok} ->
-            {ok, Ref};
-        {'DOWN', Ref, process, _Pid, _Reason} ->
-            {error, _Reason}
-    after 3000 ->
-        {error, timeout}
+    case whereis(?MODULE) of
+        undefined -> {error, already_terminated};
+        Pid ->
+            Ref = erlang:monitor(process, Pid),
+            ?MODULE ! {self(), Ref, {subscribe, Client}},
+            receive
+                {Ref, ok} ->
+                    {ok, Ref};
+                {'DOWN', Ref, process, _Pid, _Reason} ->
+                    {error, _Reason}
+            after 3000 ->
+                {error, timeout}
+            end
     end.
 
 add_event(Name, Desc, Timeout) ->
-    Ref = make_ref(),
-    ?MODULE ! {self(), Ref, {add, Name, Desc, Timeout}},
-    receive
-        {Ref, Result} -> Result
-    after 3000 ->
-        {error, timeout}
+    case whereis(?MODULE) of
+        undefined -> {error, already_terminated};
+        _ ->
+            Ref = make_ref(),
+            ?MODULE ! {self(), Ref, {add, Name, Desc, Timeout}},
+            receive
+                {Ref, Result} -> Result
+            after 3000 ->
+                {error, timeout}
+            end
     end.
 
 
 hotload() ->
-    ?MODULE ! code_change.
+    case whereis(?MODULE) of
+        undefined -> {error, already_terminated};
+        _ -> ?MODULE ! code_change
+    end.
